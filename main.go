@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strings"
 
 	goflags "github.com/jessevdk/go-flags"
 )
@@ -36,13 +37,14 @@ type Config struct {
 	Uid       string // es scroll uid
 
 	// config options
-	SrcEs          string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
-	DstEs          string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
-	DocBufferCount int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request" default:"100"`
-	ScanTime       string `short:"t" long:"time" description:"Scroll time" default:"1m"`
-	CopySettings   bool   `long:"settings" description:"Copy sharding and replication settings from source" default:"true"`
-	Destructive    bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
-	IndexNames     string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
+	SrcEs              string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
+	DstEs              string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
+	DocBufferCount     int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request" default:"100"`
+	ScanTime           string `short:"t" long:"time" description:"Scroll time" default:"1m"`
+	CopySettings       bool   `long:"settings" description:"Copy sharding and replication settings from source" default:"true"`
+	Destructive        bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
+	IndexNames         string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
+	CopyDotnameIndexes bool   `short:"a" long:"all" description:"Copy indexes starting with ." default:"false"`
 }
 
 func main() {
@@ -69,17 +71,17 @@ func main() {
 		return
 	}
 
-	// delete remote indexes if user asked
-	if c.Destructive == true {
-		if err := c.DeleteIndexes(&idxs); err != nil {
+	// copy index settings if user asked
+	if c.CopySettings == true {
+		if err := c.CopyReplicationAndShardingSettings(&idxs); err != nil {
 			fmt.Println(err)
 			return
 		}
 	}
 
-	// copy settings if user asked
-	if c.CopySettings == true {
-		if err := c.CopyReplicationAndShardingSettings(&idxs); err != nil {
+	// delete remote indexes if user asked
+	if c.Destructive == true {
+		if err := c.DeleteIndexes(&idxs); err != nil {
 			fmt.Println(err)
 			return
 		}
@@ -115,9 +117,9 @@ func main() {
 				}
 				docCount++
 			case <-c.FlushChan:
-				fmt.Println(docCount)
 				buf.WriteRune('\n')
 				c.BulkPost(&buf)
+				fmt.Println("new documents: ", docCount)
 				buf.Reset()
 			case <-c.QuitChan:
 				fmt.Println(docCount)
@@ -149,6 +151,24 @@ func (c *Config) GetIndexes(idx *Indexes) (err error) {
 	dec := json.NewDecoder(resp.Body)
 	err = dec.Decode(idx)
 
+	// remove indexes that start with . if user asked for it
+	if c.CopyDotnameIndexes == false {
+		for name, _ := range *idx {
+			if name[0] == '.' {
+				delete(*idx, name)
+			}
+		}
+	}
+
+	// if _all indexes, limit the list of indexes to only these that we kept after looking at mappings
+	if c.IndexNames == "_all" {
+		var newIndexes []string
+		for name, _ := range *idx {
+			newIndexes = append(newIndexes, name)
+		}
+		c.IndexNames = strings.Join(newIndexes, ",")
+	}
+
 	return
 }
 
@@ -156,7 +176,7 @@ func (c *Config) GetIndexes(idx *Indexes) (err error) {
 func (c *Config) CreateIndexes(idxs *Indexes) (err error) {
 
 	for name, idx := range *idxs {
-		fmt.Println(name)
+		fmt.Println("create index: ", name)
 		body := bytes.Buffer{}
 		enc := json.NewEncoder(&body)
 		enc.Encode(idx)
@@ -181,7 +201,7 @@ func (c *Config) CreateIndexes(idxs *Indexes) (err error) {
 func (c *Config) DeleteIndexes(idxs *Indexes) (err error) {
 
 	for name, idx := range *idxs {
-		fmt.Println(name)
+		fmt.Println("deleting index: ", name)
 		body := bytes.Buffer{}
 		enc := json.NewEncoder(&body)
 		enc.Encode(idx)
@@ -198,7 +218,7 @@ func (c *Config) DeleteIndexes(idxs *Indexes) (err error) {
 		defer resp.Body.Close()
 		if resp.StatusCode == 404 {
 			// thats okay, index doesnt exist
-			return err
+			continue
 		}
 
 		if resp.StatusCode != 200 {
@@ -334,9 +354,6 @@ func (c *Config) BulkPost(data *bytes.Buffer) {
 		c.ErrChan <- err
 		return
 	}
-	defer resp.Body.Close()
-	b, _ := ioutil.ReadAll(resp.Body)
-	c.ErrChan <- fmt.Errorf("bad bulk response: %s", string(b))
 
 	if resp.StatusCode != 200 {
 		b, _ := ioutil.ReadAll(resp.Body)

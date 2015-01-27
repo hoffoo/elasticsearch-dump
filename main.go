@@ -355,6 +355,7 @@ func (c *Config) BulkPost(data *bytes.Buffer) {
 		return
 	}
 
+	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		b, _ := ioutil.ReadAll(resp.Body)
 		c.ErrChan <- fmt.Errorf("bad bulk response: %s", string(b))

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"runtime"
-	"strconv"
 
 	goflags "github.com/jessevdk/go-flags"
 )
@@ -19,7 +19,7 @@ type Document struct {
 	action string
 	Index  string                 `json:"_index"`
 	Type   string                 `json:"_type"`
-	Id     int                    `json:"_id"`
+	Id     string                 `json:"_id"`
 	source map[string]interface{} `json:"_source"`
 }
 
@@ -32,6 +32,7 @@ type Config struct {
 	DocChan   chan Document
 	ErrChan   chan error
 	FlushChan chan struct{}
+	QuitChan  chan struct{}
 	Uid       string // es scroll uid
 
 	// config options
@@ -39,6 +40,9 @@ type Config struct {
 	DstEs          string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
 	DocBufferCount int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request" default:"100"`
 	ScanTime       string `short:"t" long:"time" description:"Scroll time" default:"1m"`
+	CopySettings   bool   `long:"settings" description:"Copy sharding and replication settings from source" default:"true"`
+	Destructive    bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
+	IndexNames     string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
 }
 
 func main() {
@@ -49,15 +53,36 @@ func main() {
 		DocChan:   make(chan Document),
 		ErrChan:   make(chan error),
 		FlushChan: make(chan struct{}, 1),
+		QuitChan:  make(chan struct{}),
 	}
 
-	goflags.Parse(&c)
+	_, err := goflags.Parse(&c)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 
 	// get all indexes
 	idxs := Indexes{}
 	if err := c.GetIndexes(&idxs); err != nil {
 		fmt.Println(err)
 		return
+	}
+
+	// delete remote indexes if user asked
+	if c.Destructive == true {
+		if err := c.DeleteIndexes(&idxs); err != nil {
+			fmt.Println(err)
+			return
+		}
+	}
+
+	// copy settings if user asked
+	if c.CopySettings == true {
+		if err := c.CopyReplicationAndShardingSettings(&idxs); err != nil {
+			fmt.Println(err)
+			return
+		}
 	}
 
 	// create indexes on DstEs
@@ -94,9 +119,17 @@ func main() {
 				buf.WriteRune('\n')
 				c.BulkPost(&buf)
 				buf.Reset()
-			case err := <-c.ErrChan:
-				fmt.Println(err)
+			case <-c.QuitChan:
+				fmt.Println(docCount)
+				os.Exit(0) // screw cleaning up (troll)
 			}
+		}
+	}()
+
+	go func() {
+		for {
+			err := <-c.ErrChan
+			fmt.Println(err)
 		}
 	}()
 
@@ -107,7 +140,7 @@ func main() {
 
 func (c *Config) GetIndexes(idx *Indexes) (err error) {
 
-	resp, err := http.Get(fmt.Sprintf("%s/_mappings", c.SrcEs))
+	resp, err := http.Get(fmt.Sprintf("%s/%s/_mappings", c.SrcEs, c.IndexNames))
 	if err != nil {
 		return
 	}
@@ -145,10 +178,81 @@ func (c *Config) CreateIndexes(idxs *Indexes) (err error) {
 	return
 }
 
+func (c *Config) DeleteIndexes(idxs *Indexes) (err error) {
+
+	for name, idx := range *idxs {
+		fmt.Println(name)
+		body := bytes.Buffer{}
+		enc := json.NewEncoder(&body)
+		enc.Encode(idx)
+
+		req, err := http.NewRequest("DELETE", fmt.Sprintf("%s/%s", c.DstEs, name), nil)
+		if err != nil {
+			return err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		defer resp.Body.Close()
+		if resp.StatusCode == 404 {
+			// thats okay, index doesnt exist
+			return err
+		}
+
+		if resp.StatusCode != 200 {
+			b, _ := ioutil.ReadAll(resp.Body)
+			resp.Body.Close()
+			return fmt.Errorf("failed deleting index: %s", string(b))
+		}
+
+	}
+
+	return
+}
+
+func (c *Config) CopyReplicationAndShardingSettings(idxs *Indexes) (err error) {
+
+	// get all settings
+	allSettings := map[string]interface{}{}
+
+	resp, err := http.Get(fmt.Sprintf("%s/_all/_settings", c.SrcEs))
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != 200 {
+		b, _ := ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+		return fmt.Errorf("failed deleting index: %s", string(b))
+	}
+
+	dec := json.NewDecoder(resp.Body)
+	if err := dec.Decode(&allSettings); err != nil {
+		return err
+	}
+
+	for name, index := range *idxs {
+		if settings, ok := allSettings[name]; !ok {
+			return fmt.Errorf("couldnt find index %s", name)
+		} else {
+			// omg XXX
+			index.(map[string]interface{})["settings"] = map[string]interface{}{}
+			index.(map[string]interface{})["settings"].(map[string]interface{})["index"] = map[string]interface{}{
+				"number_of_replicas": settings.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_replicas"],
+				"number_of_shards":   settings.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_shards"],
+			}
+		}
+	}
+
+	return
+}
+
 // make the initial scroll req
 func (c *Config) NewScroll() (scroll *Scroll, err error) {
 
-	resp, err := http.Get(fmt.Sprintf("%s/_all/_search/?scroll=1m&search_type=scan&size=%d", c.SrcEs, c.DocBufferCount))
+	resp, err := http.Get(fmt.Sprintf("%s/%s/_search/?scroll=1m&search_type=scan&size=%d", c.SrcEs, c.IndexNames, c.DocBufferCount))
 	if err != nil {
 		return
 	}
@@ -172,6 +276,14 @@ func (s *Scroll) Stream(c *Config) {
 		return
 	}
 	defer resp.Body.Close()
+
+	// XXX this might be bad, but assume we are done
+	if resp.StatusCode == 404 {
+		// flush and quit
+		c.QuitChan <- struct{}{}
+		return
+	}
+
 	if resp.StatusCode != 200 {
 		b, _ := ioutil.ReadAll(resp.Body)
 		c.ErrChan <- fmt.Errorf("bad scroll response: %s", string(b))
@@ -200,19 +312,19 @@ func (s *Scroll) Stream(c *Config) {
 
 		for _, docI := range docs {
 			doc := docI.(map[string]interface{})
-			id, _ := strconv.Atoi(doc["_id"].(string))
 			d := Document{
 				Index:  doc["_index"].(string),
 				Type:   doc["_type"].(string),
 				source: doc["_source"].(map[string]interface{}),
-				Id:     id,
+				Id:     doc["_id"].(string),
 			}
-			delete(d.source, "id") // dont put id thats in _source
 			c.DocChan <- d
 		}
 
 		c.FlushChan <- struct{}{}
 	}
+
+	return
 }
 
 func (c *Config) BulkPost(data *bytes.Buffer) {
@@ -223,6 +335,8 @@ func (c *Config) BulkPost(data *bytes.Buffer) {
 		return
 	}
 	defer resp.Body.Close()
+	b, _ := ioutil.ReadAll(resp.Body)
+	c.ErrChan <- fmt.Errorf("bad bulk response: %s", string(b))
 
 	if resp.StatusCode != 200 {
 		b, _ := ioutil.ReadAll(resp.Body)

@@ -2,11 +2,11 @@ Elasticsearch Dumper
 ===
 
 EXAMPLE:
-===
+==
 ```elasticsearch-dumper -s source:9200 -d destination:9200 -i index1,index2```
 
 INSTALL:
-===
+==
 1. ```go get github.com/hoffoo/elasticsearch-dump```
 2. or download a prebuilt binary here: https://github.com/hoffoo/elasticsearch-dump/releases/
 

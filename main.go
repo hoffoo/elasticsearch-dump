@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 
+	pb "github.com/cheggaaa/pb"
 	goflags "github.com/jessevdk/go-flags"
 )
 
@@ -27,6 +28,9 @@ type Document struct {
 type Scroll struct {
 	ScrollId string `json:"_scroll_id"`
 	TimedOut bool   `json:"timed_out"`
+	Hits     struct {
+		Total int `json:"total"`
+	} `json:"hits"`
 }
 
 type Config struct {
@@ -40,11 +44,12 @@ type Config struct {
 	SrcEs              string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
 	DstEs              string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
 	DocBufferCount     int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request" default:"100"`
-	ScanTime           string `short:"t" long:"time" description:"Scroll time" default:"1m"`
+	ScrollTime         string `short:"t" long:"time" description:"Scroll time" default:"1m"`
 	CopySettings       bool   `long:"settings" description:"Copy sharding and replication settings from source" default:"true"`
 	Destructive        bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
 	IndexNames         string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
 	CopyDotnameIndexes bool   `short:"a" long:"all" description:"Copy indexes starting with ." default:"false"`
+	//CompareIndexes     []string `long:"diff" description:"Compare indexes between elasticsearch indexes"`
 }
 
 func main() {
@@ -63,6 +68,11 @@ func main() {
 		fmt.Println(err)
 		return
 	}
+
+	//	if len(c.CompareIndexes) > 0 {
+	//		c.Compare()
+	//		return
+	//	}
 
 	// get all indexes
 	idxs := Indexes{}
@@ -99,6 +109,7 @@ func main() {
 		return
 	}
 
+	bar := pb.StartNew(scroll.Hits.Total)
 	go func() {
 		buf := bytes.Buffer{}
 		enc := json.NewEncoder(&buf)
@@ -115,14 +126,13 @@ func main() {
 				if err = enc.Encode(doc.source); err != nil {
 					c.ErrChan <- err
 				}
-				docCount++
+				bar.Increment()
 			case <-c.FlushChan:
 				buf.WriteRune('\n')
 				c.BulkPost(&buf)
-				fmt.Println("new documents: ", docCount)
 				buf.Reset()
 			case <-c.QuitChan:
-				fmt.Println(docCount)
+				fmt.Println("Indexed ", docCount, "documents")
 				os.Exit(0) // screw cleaning up (troll)
 			}
 		}
@@ -172,7 +182,7 @@ func (c *Config) GetIndexes(idx *Indexes) (err error) {
 	return
 }
 
-//
+// CreateIndexes on remote ES instance
 func (c *Config) CreateIndexes(idxs *Indexes) (err error) {
 
 	for name, idx := range *idxs {
@@ -290,7 +300,7 @@ func (c *Config) NewScroll() (scroll *Scroll, err error) {
 func (s *Scroll) Stream(c *Config) {
 
 	id := bytes.NewBufferString(s.ScrollId)
-	resp, err := http.Post(fmt.Sprintf("%s/_search/scroll?scroll=%s&search_type=scan&size=%d", c.SrcEs, c.ScanTime, c.DocBufferCount), "", id)
+	resp, err := http.Post(fmt.Sprintf("%s/_search/scroll?scroll=%s&search_type=scan&size=%d", c.SrcEs, c.ScrollTime, c.DocBufferCount), "", id)
 	if err != nil {
 		c.ErrChan <- err
 		return
@@ -361,4 +371,8 @@ func (c *Config) BulkPost(data *bytes.Buffer) {
 		c.ErrChan <- fmt.Errorf("bad bulk response: %s", string(b))
 		return
 	}
+}
+
+func (c *Config) Compare() {
+
 }

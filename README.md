@@ -1,12 +1,9 @@
-Elasticsearch Dumper
-===
+# Elasticsearch Dumper
 
-EXAMPLE:
-==
+## EXAMPLE:
 ```elasticsearch-dumper -s source:9200 -d destination:9200 -i index1,index2```
 
-INSTALL:
-==
+## INSTALL:
 1. ```go get github.com/hoffoo/elasticsearch-dump```
 2. or download a prebuilt binary here: https://github.com/hoffoo/elasticsearch-dump/releases/
 
@@ -22,8 +19,7 @@ Application Options:
   -i, --indexes=  List of indexes to copy, comma separated (_all)
 ```
 
-NOTES:
-==
+## NOTES:
 
 1. Copies using the [_source](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/mapping-source-field.html) field in elasticsearch. If you have made modifications to it (excluding fields, etc) they will not be indexed on the destination host.
 1. All documents are created, nothing is updated. If a document with the same _id is received (which shouldnt happen anyway) an error will be shown and the latter document will not be indexed.
@@ -34,8 +30,7 @@ NOTES:
 1. ```--indexes``` is a comma separated list of indexes to copy
 1. Ports are required, otherwise 80 is the assumed port
 
-BUGS:
-==
+## BUGS:
 
 1. It will not do anything special when copying the _id (copies _id from source host). If _id is remapped this probably won't do what you want.
 1. Should check if the bulk index requests starts getting large (in bytes), and force a flush if that is the case. Right now we silently fail if elasticsearch refuses a large request.

@@ -20,6 +20,7 @@ NOTES:
 1. Source and Destination are required
 1. Copies using the [_source](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/mapping-source-field.html) field in elasticsearch. If you have made modifications to it (excluding fields) they will not be indexed on the destination host.
 1. Ports are required, otherwise 80 is the assumed port
+1. All documents are created, nothing is updated. If a document with the same _id is received (which shouldnt happen anyway) an error will be shown and the latter document will not be indexed.
 1. --settings is a toggle on weather we should copy replication and sharding settings for the indexes. This is the default, and replication and sharding are the only settings copied.
 1. --force will delete indexes on the destination host. Otherwise an error will be returned if the index exists
 1. --time is the [scroll time](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/search-request-scroll.html#scroll-search-context) passed to the source host, default is 1m. This is a string in es's format.
@@ -29,6 +30,6 @@ NOTES:
 BUGS:
 ==
 
-1. It will not do anything special when copying the _id (copies _id from source host). If _id is remapped this probably wont do what you want.
+1. It will not do anything special when copying the _id (copies _id from source host). If _id is remapped this probably won't do what you want.
 1. Should check if the bulk index requests starts getting large (in bytes), and force a flush if that is the case. Right now we silently fail if elasticsearch refuses a large request.
 1. Should assume a default port of 9200

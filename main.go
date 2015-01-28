@@ -321,7 +321,7 @@ func (c *Config) CopyShardingSettings(idxs *Indexes) (err error) {
 			// omg XXX
 			index.(map[string]interface{})["settings"] = map[string]interface{}{}
 			var shards string
-			if _, ok := index.(map[string]interface{})["settings"].(map[string]interface{})["index"]; ok {
+			if _, ok := settings.(map[string]interface{})["settings"].(map[string]interface{})["index"]; ok {
 				// try the new style syntax first, which has an index object
 				shards = settings.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_shards"].(string)
 			} else {

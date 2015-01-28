@@ -15,23 +15,23 @@ Application Options:
   -c, --count=    Number of documents at a time: ie "size" in the scroll
                   request (100)
   -t, --time=     Scroll time (1m)
-      --settings  Copy sharding and replication settings from source (true)
+      --settings  Copy sharding settings from source (true)
   -f, --force     Delete destination index before copying (false)
   -i, --indexes=  List of indexes to copy, comma separated (_all)
   -a, --all       Copy indexes starting with . (false)
   -w, --workers=  Concurrency (1)
 ```
 
+
 ## NOTES:
 
+1. Has been tested getting data from 0.9 onto a 1.4 box. For other scenaries YMMV.
 1. Copies using the [_source](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/mapping-source-field.html) field in elasticsearch. If you have made modifications to it (excluding fields, etc) they will not be indexed on the destination host.
-1. All documents are created, nothing is updated. If a document with the same _id is received (which shouldnt happen anyway) an error will be shown and the latter document will not be indexed.
-1. ```--settings``` is a toggle if we should copy replication and sharding settings for the indexes. This is the default, and replication and sharding are the only settings copied.
 1. ```--force``` will delete indexes on the destination host. Otherwise an error will be returned if the index exists
 1. ```--time``` is the [scroll time](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/search-request-scroll.html#scroll-search-context) passed to the source host, default is 1m. This is a string in es's format.
 1. ```--count``` is the [number of documents](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/search-request-scroll.html#scroll-scan) that will be request and bulk indexed at a time. Note that this depends on the number of shards (ie: size of 10 on 5 shards is 50 documents)
 1. ```--indexes``` is a comma separated list of indexes to copy
-1. ```--all``` copy all indexes, even those starting with '.'. The default is false, to ignore marvel and others
+1. ```--all``` indexes starting with . and _ are ignored by default, --all overrides this behavior
 1. ```--workers``` concurrency when we post to the bulk api. Only one post happens at a time, but higher concurrency should give you more throughput when using larger scroll sizes.
 1. Ports are required, otherwise 80 is the assumed port
 

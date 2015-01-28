@@ -40,15 +40,15 @@ type Config struct {
 	Uid       string // es scroll uid
 
 	// config options
-	SrcEs              string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
-	DstEs              string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
-	DocBufferCount     int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request" default:"100"`
-	ScrollTime         string `short:"t" long:"time" description:"Scroll time" default:"1m"`
-	CopySettings       bool   `long:"settings" description:"Copy sharding and replication settings from source" default:"true"`
-	Destructive        bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
-	IndexNames         string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
-	CopyDotnameIndexes bool   `short:"a" long:"all" description:"Copy indexes starting with ." default:"false"`
-	Workers            int    `short:"w" long:"workers" description:"Concurrency" default:"1"`
+	SrcEs          string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
+	DstEs          string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
+	DocBufferCount int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request" default:"100"`
+	ScrollTime     string `short:"t" long:"time" description:"Scroll time" default:"1m"`
+	CopySettings   bool   `long:"settings" description:"Copy sharding and replication settings from source" default:"true"`
+	Destructive    bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
+	IndexNames     string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
+	CopyAllIndexes bool   `short:"a" long:"all" description:"Copy all indexes, if false indexes starting with . and _ are not copied" default:"false"`
+	Workers        int    `short:"w" long:"workers" description:"Concurrency" default:"1"`
 }
 
 func main() {
@@ -79,7 +79,7 @@ func main() {
 
 	// copy index settings if user asked
 	if c.CopySettings == true {
-		if err := c.CopyReplicationAndShardingSettings(&idxs); err != nil {
+		if err := c.CopyShardingSettings(&idxs); err != nil {
 			fmt.Println(err)
 			return
 		}
@@ -200,10 +200,14 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 	}
 
 	// remove indexes that start with . if user asked for it
-	if c.CopyDotnameIndexes == false {
+	if c.CopyAllIndexes == false {
 		for name, _ := range *idx {
-			if name[0] == '.' {
+			switch name[0] {
+			case '.':
 				delete(*idx, name)
+			case '_':
+				delete(*idx, name)
+
 			}
 		}
 	}
@@ -280,7 +284,7 @@ func (c *Config) DeleteIndexes(idxs *Indexes) (err error) {
 	return
 }
 
-func (c *Config) CopyReplicationAndShardingSettings(idxs *Indexes) (err error) {
+func (c *Config) CopyShardingSettings(idxs *Indexes) (err error) {
 
 	// get all settings
 	allSettings := map[string]interface{}{}
@@ -307,19 +311,16 @@ func (c *Config) CopyReplicationAndShardingSettings(idxs *Indexes) (err error) {
 		} else {
 			// omg XXX
 			index.(map[string]interface{})["settings"] = map[string]interface{}{}
-			var shards, replicas string
+			var shards string
 			if _, ok := index.(map[string]interface{})["settings"].(map[string]interface{})["index"]; ok {
 				// try the new style syntax first, which has an index object
 				shards = settings.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_shards"].(string)
-				replicas = settings.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_replicas"].(string)
 			} else {
 				// if not, could be running from an old es intace, try the old style index.number_of_shards
 				shards = settings.(map[string]interface{})["settings"].(map[string]interface{})["index.number_of_shards"].(string)
-				replicas = settings.(map[string]interface{})["settings"].(map[string]interface{})["index.number_of_replicas"].(string)
 			}
 			index.(map[string]interface{})["settings"].(map[string]interface{})["index"] = map[string]interface{}{
-				"number_of_shards":   shards,
-				"number_of_replicas": replicas,
+				"number_of_shards": shards,
 			}
 		}
 	}

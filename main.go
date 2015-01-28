@@ -40,15 +40,17 @@ type Config struct {
 	Uid       string // es scroll uid
 
 	// config options
-	SrcEs          string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
-	DstEs          string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
-	DocBufferCount int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request" default:"100"`
-	ScrollTime     string `short:"t" long:"time" description:"Scroll time" default:"1m"`
-	CopySettings   bool   `long:"settings" description:"Copy sharding and replication settings from source" default:"true"`
-	Destructive    bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
-	IndexNames     string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
-	CopyAllIndexes bool   `short:"a" long:"all" description:"Copy all indexes, if false indexes starting with . and _ are not copied" default:"false"`
-	Workers        int    `short:"w" long:"workers" description:"Concurrency" default:"1"`
+	SrcEs             string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
+	DstEs             string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
+	DocBufferCount    int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request" default:"100"`
+	ScrollTime        string `short:"t" long:"time" description:"Scroll time" default:"1m"`
+	CopySettings      bool   `long:"settings" description:"Copy sharding and replication settings from source" default:"true"`
+	Destructive       bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
+	DocsOnly          bool   `long:"docs-only" description:"Load documents only, do not try to recreate indexes" default:"false"`
+	CreateIndexesOnly bool   `long:"index-only" description:"Only create indexes, do not load documents" default:"false"`
+	IndexNames        string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
+	CopyAllIndexes    bool   `short:"a" long:"all" description:"Copy all indexes, if false indexes starting with . and _ are not copied" default:"false"`
+	Workers           int    `short:"w" long:"workers" description:"Concurrency" default:"1"`
 }
 
 func main() {
@@ -85,17 +87,24 @@ func main() {
 		}
 	}
 
-	// delete remote indexes if user asked
-	if c.Destructive == true {
-		if err := c.DeleteIndexes(&idxs); err != nil {
+	if c.DocsOnly == false {
+		// delete remote indexes if user asked
+		if c.Destructive == true {
+			if err := c.DeleteIndexes(&idxs); err != nil {
+				fmt.Println(err)
+				return
+			}
+		}
+
+		// create indexes on DstEs
+		if err := c.CreateIndexes(&idxs); err != nil {
 			fmt.Println(err)
 			return
 		}
 	}
 
-	// create indexes on DstEs
-	if err := c.CreateIndexes(&idxs); err != nil {
-		fmt.Println(err)
+	if c.CreateIndexesOnly {
+		fmt.Println("Indexes created, done")
 		return
 	}
 

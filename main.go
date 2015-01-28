@@ -34,11 +34,10 @@ type Scroll struct {
 }
 
 type Config struct {
-	DocChan   chan Document
-	ErrChan   chan error
-	FlushChan chan struct{}
-	QuitChan  chan struct{}
-	Uid       string // es scroll uid
+	DocChan  chan Document
+	ErrChan  chan error
+	QuitChan chan struct{}
+	Uid      string // es scroll uid
 
 	// config options
 	SrcEs              string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
@@ -56,10 +55,9 @@ func main() {
 	runtime.GOMAXPROCS(2)
 
 	c := Config{
-		DocChan:   make(chan Document),
-		ErrChan:   make(chan error),
-		FlushChan: make(chan struct{}, 1),
-		QuitChan:  make(chan struct{}),
+		DocChan:  make(chan Document),
+		ErrChan:  make(chan error),
+		QuitChan: make(chan struct{}, 1),
 	}
 
 	_, err := goflags.Parse(&c)
@@ -105,8 +103,9 @@ func main() {
 
 	bar := pb.StartNew(scroll.Hits.Total)
 	go func() {
-		buf := bytes.Buffer{}
-		enc := json.NewEncoder(&buf)
+		mainBuf := bytes.Buffer{}
+		docBuf := bytes.Buffer{}
+		docEnc := json.NewEncoder(&docBuf)
 		var docCount int
 		for {
 			select {
@@ -114,18 +113,29 @@ func main() {
 				post := map[string]Document{
 					"create": doc,
 				}
-				if err = enc.Encode(post); err != nil {
+				if err = docEnc.Encode(post); err != nil {
 					c.ErrChan <- err
 				}
-				if err = enc.Encode(doc.source); err != nil {
+				if err = docEnc.Encode(doc.source); err != nil {
 					c.ErrChan <- err
 				}
+				// if we hit 100mb limit, flush to es and reset mainBuf
+				if mainBuf.Len()+docBuf.Len() > 100000000 {
+					c.BulkPost(&mainBuf)
+				}
+
+				// append the doc to the main buffer
+				mainBuf.Write(docBuf.Bytes())
+				// reset for next document
+				docBuf.Reset()
 				bar.Increment()
-			case <-c.FlushChan:
-				buf.WriteRune('\n')
-				c.BulkPost(&buf)
-				buf.Reset()
 			case <-c.QuitChan:
+				// do one final post and gtfo
+				if docBuf.Len() > 0 {
+					mainBuf.Write(docBuf.Bytes())
+				}
+				c.BulkPost(&mainBuf)
+
 				fmt.Println("Indexed", docCount, "documents")
 				os.Exit(0) // screw cleaning up (troll)
 			}
@@ -344,15 +354,15 @@ func (s *Scroll) Stream(c *Config) {
 			}
 			c.DocChan <- d
 		}
-
-		c.FlushChan <- struct{}{}
 	}
 
 	return
 }
 
+// Post to es as bulk and reset the data buffer
 func (c *Config) BulkPost(data *bytes.Buffer) {
 
+	data.WriteRune('\n')
 	resp, err := http.Post(fmt.Sprintf("%s/_bulk", c.DstEs), "", data)
 	if err != nil {
 		c.ErrChan <- err
@@ -360,6 +370,7 @@ func (c *Config) BulkPost(data *bytes.Buffer) {
 	}
 
 	defer resp.Body.Close()
+	defer data.Reset()
 	if resp.StatusCode != 200 {
 		b, _ := ioutil.ReadAll(resp.Body)
 		c.ErrChan <- fmt.Errorf("bad bulk response: %s", string(b))

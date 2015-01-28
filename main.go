@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -20,7 +19,6 @@ import (
 type Indexes map[string]interface{}
 
 type Document struct {
-	action string
 	Index  string                 `json:"_index"`
 	Type   string                 `json:"_type"`
 	Id     string                 `json:"_id"`
@@ -62,13 +60,14 @@ func main() {
 		ErrChan:   make(chan error),
 	}
 
+	// parse args
 	_, err := goflags.Parse(&c)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	// enough of a buffer to hold all all search results across all workers
+	// enough of a buffer to hold all the search results across all workers
 	c.DocChan = make(chan Document, c.DocBufferCount*c.Workers)
 
 	// get all indexes from source
@@ -100,58 +99,24 @@ func main() {
 		return
 	}
 
+	// start scroll
 	scroll, err := c.NewScroll()
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
+	// create a progressbar and start a docCount
 	bar := pb.StartNew(scroll.Hits.Total)
 	var docCount int
 
 	wg := sync.WaitGroup{}
 	wg.Add(c.Workers)
 	for i := 0; i < c.Workers; i++ {
-		go func() {
-			mainBuf := bytes.Buffer{}
-			docBuf := bytes.Buffer{}
-			docEnc := json.NewEncoder(&docBuf)
-			for {
-				doc, ok := <-c.DocChan
-				if !ok {
-					// if channel is closed flush and gtfo
-					if docBuf.Len() > 0 {
-						mainBuf.Write(docBuf.Bytes())
-					}
-					c.BulkPost(&mainBuf)
-					wg.Done()
-					return
-				} else {
-					post := map[string]Document{
-						"create": doc,
-					}
-					if err = docEnc.Encode(post); err != nil {
-						c.ErrChan <- err
-					}
-					if err = docEnc.Encode(doc.source); err != nil {
-						c.ErrChan <- err
-					}
-					// if we hit 100mb limit, flush to es and reset mainBuf
-					if mainBuf.Len()+docBuf.Len() > 100000000 {
-						c.BulkPost(&mainBuf)
-					}
-
-					// append the doc to the main buffer
-					mainBuf.Write(docBuf.Bytes())
-					// reset for next document
-					docBuf.Reset()
-					bar.Increment()
-					docCount++
-				}
-			}
-		}()
+		go c.NewWorker(&docCount, bar, &wg)
 	}
 
+	// print errors
 	go func() {
 		for {
 			err := <-c.ErrChan
@@ -159,17 +124,66 @@ func main() {
 		}
 	}()
 
+	// loop scrolling until done
 	for scroll.Stream(&c) == false {
 	}
 
+	// finished, flush any remaining docs and quit
 	close(c.DocChan)
 	wg.Wait()
-	fmt.Println("indexed", docCount, "documents")
+	bar.FinishPrint(fmt.Sprintln("Indexed", docCount, "documents"))
+}
+
+func (c *Config) NewWorker(docCount *int, bar *pb.ProgressBar, wg *sync.WaitGroup) {
+
+	mainBuf := bytes.Buffer{}
+	docBuf := bytes.Buffer{}
+	docEnc := json.NewEncoder(&docBuf)
+
+	for {
+		var err error
+		doc, open := <-c.DocChan
+
+		// if channel is closed flush and gtfo
+		if !open {
+			goto WORKER_DONE
+		}
+
+		// encode the doc and and the _source field for a bulk request
+		post := map[string]Document{
+			"create": doc,
+		}
+		if err = docEnc.Encode(post); err != nil {
+			c.ErrChan <- err
+		}
+		if err = docEnc.Encode(doc.source); err != nil {
+			c.ErrChan <- err
+		}
+
+		// if we hit 100mb limit, flush to es and reset mainBuf
+		if mainBuf.Len()+docBuf.Len() > 100000000 {
+			c.BulkPost(&mainBuf)
+		}
+
+		// append the doc to the main buffer
+		mainBuf.Write(docBuf.Bytes())
+		// reset for next document
+		docBuf.Reset()
+		bar.Increment()
+		(*docCount)++
+	}
+
+WORKER_DONE:
+	if docBuf.Len() > 0 {
+		mainBuf.Write(docBuf.Bytes())
+	}
+	c.BulkPost(&mainBuf)
+	wg.Done()
 }
 
 func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 
-	resp, err := http.Get(fmt.Sprintf("%s/%s/_mappings", host, c.IndexNames))
+	resp, err := http.Get(fmt.Sprintf("%s/%s/_mapping", host, c.IndexNames))
 	if err != nil {
 		return
 	}
@@ -187,7 +201,8 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 		}
 	}
 
-	// if _all indexes, limit the list of indexes to only these that we kept after looking at mappings
+	// if _all indexes limit the list of indexes to only these that we kept
+	// after looking at mappings
 	if c.IndexNames == "_all" {
 		var newIndexes []string
 		for name, _ := range *idx {
@@ -199,11 +214,10 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 	return
 }
 
-// CreateIndexes on remote ES instance
+// CreateIndexes on remodeleted ES instance
 func (c *Config) CreateIndexes(idxs *Indexes) (err error) {
 
 	for name, idx := range *idxs {
-		fmt.Println("create index: ", name)
 		body := bytes.Buffer{}
 		enc := json.NewEncoder(&body)
 		enc.Encode(idx)
@@ -212,14 +226,14 @@ func (c *Config) CreateIndexes(idxs *Indexes) (err error) {
 		if err != nil {
 			return err
 		}
+		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
 			b, _ := ioutil.ReadAll(resp.Body)
-			resp.Body.Close()
 			return fmt.Errorf("failed creating index: %s", string(b))
 		}
 
-		resp.Body.Close()
+		fmt.Println("created index: ", name)
 	}
 
 	return
@@ -228,7 +242,6 @@ func (c *Config) CreateIndexes(idxs *Indexes) (err error) {
 func (c *Config) DeleteIndexes(idxs *Indexes) (err error) {
 
 	for name, idx := range *idxs {
-		fmt.Println("deleting index: ", name)
 		body := bytes.Buffer{}
 		enc := json.NewEncoder(&body)
 		enc.Encode(idx)
@@ -254,6 +267,7 @@ func (c *Config) DeleteIndexes(idxs *Indexes) (err error) {
 			return fmt.Errorf("failed deleting index: %s", string(b))
 		}
 
+		fmt.Println("deleted index: ", name)
 	}
 
 	return
@@ -272,7 +286,7 @@ func (c *Config) CopyReplicationAndShardingSettings(idxs *Indexes) (err error) {
 	if resp.StatusCode != 200 {
 		b, _ := ioutil.ReadAll(resp.Body)
 		resp.Body.Close()
-		return fmt.Errorf("failed deleting index: %s", string(b))
+		return fmt.Errorf("failed getting settings for index: %s", string(b))
 	}
 
 	dec := json.NewDecoder(resp.Body)
@@ -313,7 +327,8 @@ func (c *Config) NewScroll() (scroll *Scroll, err error) {
 	return
 }
 
-// stream from source es instance
+// Stream from source es instance. "done" is an indicator that the stream is
+// over
 func (s *Scroll) Stream(c *Config) (done bool) {
 
 	id := bytes.NewBufferString(s.ScrollId)
@@ -326,7 +341,6 @@ func (s *Scroll) Stream(c *Config) (done bool) {
 
 	// XXX this might be bad, but assume we are done
 	if resp.StatusCode == 404 {
-		io.Copy(os.Stdout, resp.Body)
 		// flush and quit
 		return true
 	}
@@ -337,39 +351,47 @@ func (s *Scroll) Stream(c *Config) (done bool) {
 		return
 	}
 
-	dec := json.NewDecoder(resp.Body)
-	docs := map[string]interface{}{}
-	err = dec.Decode(&docs)
-	if err != nil {
-		c.ErrChan <- err
-	} else {
-		hits := docs["hits"]
-		var ok bool
-		var docsInterface map[string]interface{}
-		if docsInterface, ok = hits.(map[string]interface{}); !ok {
-			c.ErrChan <- errors.New("failed casting doc interfaces")
-			return
-		}
-
-		var docs []interface{}
-		if docs, ok = docsInterface["hits"].([]interface{}); !ok {
-			c.ErrChan <- errors.New("failed casting doc")
-			return
-		}
-
-		for _, docI := range docs {
-			doc := docI.(map[string]interface{})
-			d := Document{
-				Index:  doc["_index"].(string),
-				Type:   doc["_type"].(string),
-				source: doc["_source"].(map[string]interface{}),
-				Id:     doc["_id"].(string),
-			}
-			c.DocChan <- d
-		}
-	}
+	c.DecodeStream(resp.Body)
 
 	return
+}
+
+func (c *Config) DecodeStream(body io.Reader) {
+
+	dec := json.NewDecoder(body)
+	streamResponse := map[string]interface{}{}
+	err := dec.Decode(&streamResponse)
+	if err != nil {
+		c.ErrChan <- err
+		return
+	}
+
+	// decode docs json
+	hits := streamResponse["hits"]
+	var ok bool
+	var docsInterface map[string]interface{}
+	if docsInterface, ok = hits.(map[string]interface{}); !ok {
+		c.ErrChan <- errors.New("failed casting doc interfaces")
+		return
+	}
+
+	// cast the hits field into an array
+	var docs []interface{}
+	if docs, ok = docsInterface["hits"].([]interface{}); !ok {
+		c.ErrChan <- errors.New("failed casting doc")
+		return
+	}
+
+	// write all the docs into a channel
+	for _, docI := range docs {
+		doc := docI.(map[string]interface{})
+		c.DocChan <- Document{
+			Index:  doc["_index"].(string),
+			Type:   doc["_type"].(string),
+			source: doc["_source"].(map[string]interface{}),
+			Id:     doc["_id"].(string),
+		}
+	}
 }
 
 // Post to es as bulk and reset the data buffer

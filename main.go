@@ -41,7 +41,7 @@ type Config struct {
 	// config options
 	SrcEs             string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
 	DstEs             string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
-	DocBufferCount    int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request" default:"100"`
+	DocBufferCount    int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request. If 0 size will not be sent to es" default:"100"`
 	ScrollTime        string `short:"t" long:"time" description:"Scroll time" default:"1m"`
 	CopySettings      bool   `long:"settings" description:"Copy sharding settings from source" default:"true"`
 	Destructive       bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
@@ -69,7 +69,11 @@ func main() {
 	}
 
 	// enough of a buffer to hold all the search results across all workers
-	c.DocChan = make(chan Document, c.DocBufferCount*c.Workers)
+	if c.DocBufferCount == 0 {
+		c.DocChan = make(chan Document, 1000*c.Workers)
+	} else {
+		c.DocChan = make(chan Document, c.DocBufferCount*c.Workers)
+	}
 
 	// get all indexes from source
 	idxs := Indexes{}
@@ -348,7 +352,13 @@ func (c *Config) CopyShardingSettings(idxs *Indexes) (err error) {
 func (c *Config) NewScroll() (scroll *Scroll, err error) {
 
 	// curl -XGET 'http://es-0.9:9200/_search?search_type=scan&scroll=10m&size=50'
-	resp, err := http.Get(fmt.Sprintf("%s/_search?search_type=scan&scroll=%s&size=%d", c.SrcEs, c.ScrollTime, c.DocBufferCount))
+	var url string
+	if c.DocBufferCount > 0 {
+		url = fmt.Sprintf("%s/_search?search_type=scan&scroll=%s&size=%d", c.SrcEs, c.ScrollTime, c.DocBufferCount)
+	} else {
+		url = fmt.Sprintf("%s/_search?search_type=scan&scroll=%s", c.SrcEs, c.ScrollTime)
+	}
+	resp, err := http.Get(url)
 	if err != nil {
 		return
 	}
@@ -368,6 +378,7 @@ func (s *Scroll) Next(c *Config) (done bool) {
 
 	//  curl -XGET 'http://es-0.9:9200/_search/scroll?scroll=5m'
 	id := bytes.NewBufferString(s.ScrollId)
+
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime), id)
 	if err != nil {
 		c.ErrChan <- err

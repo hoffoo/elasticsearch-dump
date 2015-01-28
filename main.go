@@ -300,9 +300,19 @@ func (c *Config) CopyReplicationAndShardingSettings(idxs *Indexes) (err error) {
 		} else {
 			// omg XXX
 			index.(map[string]interface{})["settings"] = map[string]interface{}{}
+			var shards, replicas string
+			if _, ok := index.(map[string]interface{})["settings"].(map[string]interface{})["index"]; ok {
+				// try the new style syntax first, which has an index object
+				shards = settings.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_shards"].(string)
+				replicas = settings.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_replicas"].(string)
+			} else {
+				// if not, could be running from an old es intace, try the old style index.number_of_shards
+				shards = settings.(map[string]interface{})["settings"].(map[string]interface{})["index.number_of_shards"].(string)
+				replicas = settings.(map[string]interface{})["settings"].(map[string]interface{})["index.number_of_replicas"].(string)
+			}
 			index.(map[string]interface{})["settings"].(map[string]interface{})["index"] = map[string]interface{}{
-				"number_of_replicas": settings.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_replicas"],
-				"number_of_shards":   settings.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_shards"],
+				"number_of_shards":   shards,
+				"number_of_replicas": replicas,
 			}
 		}
 	}

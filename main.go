@@ -55,7 +55,6 @@ func main() {
 	runtime.GOMAXPROCS(2)
 
 	c := Config{
-		DocChan:  make(chan Document),
 		ErrChan:  make(chan error),
 		QuitChan: make(chan struct{}, 1),
 	}
@@ -65,6 +64,8 @@ func main() {
 		fmt.Println(err)
 		return
 	}
+
+	c.DocChan = make(chan Document, c.DocBufferCount)
 
 	// get all indexes from source
 	idxs := Indexes{}

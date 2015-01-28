@@ -50,7 +50,7 @@ type Config struct {
 	Destructive        bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
 	IndexNames         string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
 	CopyDotnameIndexes bool   `short:"a" long:"all" description:"Copy indexes starting with ." default:"false"`
-	Workers            int    `short:"w" long:"workers" description:"Concurrency" default:"10"`
+	Workers            int    `short:"w" long:"workers" description:"Concurrency" default:"1"`
 }
 
 func main() {
@@ -68,6 +68,7 @@ func main() {
 		return
 	}
 
+	// enough of a buffer to hold all all search results across all workers
 	c.DocChan = make(chan Document, c.DocBufferCount*c.Workers)
 
 	// get all indexes from source
@@ -117,8 +118,8 @@ func main() {
 			docEnc := json.NewEncoder(&docBuf)
 			for {
 				doc, ok := <-c.DocChan
-				if !ok { // if channel is closed flush and gtfo
-					// do one final post and gtfo
+				if !ok {
+					// if channel is closed flush and gtfo
 					if docBuf.Len() > 0 {
 						mainBuf.Write(docBuf.Bytes())
 					}

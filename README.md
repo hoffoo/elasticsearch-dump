@@ -1,7 +1,7 @@
 # Elasticsearch Dumper
 
 ## EXAMPLE:
-```elasticsearch-dumper -s source:9200 -d destination:9200 -i index1,index2```
+```elasticsearch-dumper -s http://source:9200 -d http://destination:9200 -i index1,index2```
 
 ## INSTALL:
 1. ```go get github.com/hoffoo/elasticsearch-dump```
@@ -12,12 +12,14 @@
 Application Options:
   -s, --source=   Source elasticsearch instance
   -d, --dest=     Destination elasticsearch instance
-  -c, --count=    Number of documents at a time: ie "size" in the scroll request (100)
+  -c, --count=    Number of documents at a time: ie "size" in the scroll
+                  request (100)
   -t, --time=     Scroll time (1m)
       --settings  Copy sharding and replication settings from source (true)
   -f, --force     Delete destination index before copying (false)
   -i, --indexes=  List of indexes to copy, comma separated (_all)
   -a, --all       Copy indexes starting with . (false)
+  -w, --workers=  Concurrency (1)
 ```
 
 ## NOTES:
@@ -30,6 +32,7 @@ Application Options:
 1. ```--count``` is the [number of documents](http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/search-request-scroll.html#scroll-scan) that will be request and bulk indexed at a time. Note that this depends on the number of shards (ie: size of 10 on 5 shards is 50 documents)
 1. ```--indexes``` is a comma separated list of indexes to copy
 1. ```--all``` copy all indexes, even those starting with '.'. The default is false, to ignore marvel and others
+1. ```--workers``` concurrency when we post to the bulk api. Only one post happens at a time, but higher concurrency should give you more throughput when using larger scroll sizes.
 1. Ports are required, otherwise 80 is the assumed port
 
 ## BUGS:

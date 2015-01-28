@@ -160,8 +160,8 @@ func (c *Config) NewWorker(docCount *int, bar *pb.ProgressBar, wg *sync.WaitGrou
 			c.ErrChan <- err
 		}
 
-		// if we hit 100mb limit, flush to es and reset mainBuf
-		if mainBuf.Len()+docBuf.Len() > 100000000 {
+		// if we approach the 100mb (95mb) limit, flush to es and reset mainBuf
+		if mainBuf.Len()+docBuf.Len() > 95000000 {
 			c.BulkPost(&mainBuf)
 		}
 

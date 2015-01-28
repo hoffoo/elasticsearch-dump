@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 
 	pb "github.com/cheggaaa/pb"
 	goflags "github.com/jessevdk/go-flags"
@@ -34,10 +36,10 @@ type Scroll struct {
 }
 
 type Config struct {
-	DocChan  chan Document
-	ErrChan  chan error
-	QuitChan chan struct{}
-	Uid      string // es scroll uid
+	FlushLock sync.Mutex
+	DocChan   chan Document
+	ErrChan   chan error
+	Uid       string // es scroll uid
 
 	// config options
 	SrcEs              string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
@@ -48,15 +50,16 @@ type Config struct {
 	Destructive        bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
 	IndexNames         string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
 	CopyDotnameIndexes bool   `short:"a" long:"all" description:"Copy indexes starting with ." default:"false"`
+	Workers            int    `short:"w" long:"workers" description:"Concurrency" default:"10"`
 }
 
 func main() {
 
-	runtime.GOMAXPROCS(2)
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	c := Config{
-		ErrChan:  make(chan error),
-		QuitChan: make(chan struct{}, 1),
+		FlushLock: sync.Mutex{},
+		ErrChan:   make(chan error),
 	}
 
 	_, err := goflags.Parse(&c)
@@ -65,7 +68,7 @@ func main() {
 		return
 	}
 
-	c.DocChan = make(chan Document, c.DocBufferCount)
+	c.DocChan = make(chan Document, c.DocBufferCount*c.Workers)
 
 	// get all indexes from source
 	idxs := Indexes{}
@@ -103,45 +106,50 @@ func main() {
 	}
 
 	bar := pb.StartNew(scroll.Hits.Total)
-	go func() {
-		mainBuf := bytes.Buffer{}
-		docBuf := bytes.Buffer{}
-		docEnc := json.NewEncoder(&docBuf)
-		var docCount int
-		for {
-			select {
-			case doc := <-c.DocChan:
-				post := map[string]Document{
-					"create": doc,
-				}
-				if err = docEnc.Encode(post); err != nil {
-					c.ErrChan <- err
-				}
-				if err = docEnc.Encode(doc.source); err != nil {
-					c.ErrChan <- err
-				}
-				// if we hit 100mb limit, flush to es and reset mainBuf
-				if mainBuf.Len()+docBuf.Len() > 100000000 {
+	var docCount int
+
+	wg := sync.WaitGroup{}
+	wg.Add(c.Workers)
+	for i := 0; i < c.Workers; i++ {
+		go func() {
+			mainBuf := bytes.Buffer{}
+			docBuf := bytes.Buffer{}
+			docEnc := json.NewEncoder(&docBuf)
+			for {
+				doc, ok := <-c.DocChan
+				if !ok { // if channel is closed flush and gtfo
+					// do one final post and gtfo
+					if docBuf.Len() > 0 {
+						mainBuf.Write(docBuf.Bytes())
+					}
 					c.BulkPost(&mainBuf)
-				}
+					wg.Done()
+					return
+				} else {
+					post := map[string]Document{
+						"create": doc,
+					}
+					if err = docEnc.Encode(post); err != nil {
+						c.ErrChan <- err
+					}
+					if err = docEnc.Encode(doc.source); err != nil {
+						c.ErrChan <- err
+					}
+					// if we hit 100mb limit, flush to es and reset mainBuf
+					if mainBuf.Len()+docBuf.Len() > 100000000 {
+						c.BulkPost(&mainBuf)
+					}
 
-				// append the doc to the main buffer
-				mainBuf.Write(docBuf.Bytes())
-				// reset for next document
-				docBuf.Reset()
-				bar.Increment()
-			case <-c.QuitChan:
-				// do one final post and gtfo
-				if docBuf.Len() > 0 {
+					// append the doc to the main buffer
 					mainBuf.Write(docBuf.Bytes())
+					// reset for next document
+					docBuf.Reset()
+					bar.Increment()
+					docCount++
 				}
-				c.BulkPost(&mainBuf)
-
-				fmt.Println("Indexed", docCount, "documents")
-				os.Exit(0) // screw cleaning up (troll)
 			}
-		}
-	}()
+		}()
+	}
 
 	go func() {
 		for {
@@ -150,9 +158,12 @@ func main() {
 		}
 	}()
 
-	for {
-		scroll.Stream(&c)
+	for scroll.Stream(&c) == false {
 	}
+
+	close(c.DocChan)
+	wg.Wait()
+	fmt.Println("indexed", docCount, "documents")
 }
 
 func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
@@ -302,7 +313,7 @@ func (c *Config) NewScroll() (scroll *Scroll, err error) {
 }
 
 // stream from source es instance
-func (s *Scroll) Stream(c *Config) {
+func (s *Scroll) Stream(c *Config) (done bool) {
 
 	id := bytes.NewBufferString(s.ScrollId)
 	resp, err := http.Post(fmt.Sprintf("%s/_search/scroll?scroll=%s&search_type=scan&size=%d", c.SrcEs, c.ScrollTime, c.DocBufferCount), "", id)
@@ -314,9 +325,9 @@ func (s *Scroll) Stream(c *Config) {
 
 	// XXX this might be bad, but assume we are done
 	if resp.StatusCode == 404 {
+		io.Copy(os.Stdout, resp.Body)
 		// flush and quit
-		c.QuitChan <- struct{}{}
-		return
+		return true
 	}
 
 	if resp.StatusCode != 200 {
@@ -362,6 +373,9 @@ func (s *Scroll) Stream(c *Config) {
 
 // Post to es as bulk and reset the data buffer
 func (c *Config) BulkPost(data *bytes.Buffer) {
+
+	c.FlushLock.Lock()
+	defer c.FlushLock.Unlock()
 
 	data.WriteRune('\n')
 	resp, err := http.Post(fmt.Sprintf("%s/_bulk", c.DstEs), "", data)

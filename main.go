@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"runtime"
@@ -134,10 +133,10 @@ func main() {
 	}()
 
 	// loop scrolling until done
-	for scroll.Stream(&c) == false {
+	for scroll.Next(&c) == false {
 	}
 
-	// finished, flush any remaining docs and quit
+	// finished, close doc chan and wait for goroutines to be done
 	close(c.DocChan)
 	wg.Wait()
 	bar.FinishPrint(fmt.Sprintln("Indexed", docCount, "documents"))
@@ -156,6 +155,12 @@ func (c *Config) NewWorker(docCount *int, bar *pb.ProgressBar, wg *sync.WaitGrou
 		// if channel is closed flush and gtfo
 		if !open {
 			goto WORKER_DONE
+		}
+
+		// sanity check
+		if len(doc.Index) == 0 || len(doc.Id) == 0 || len(doc.Type) == 0 {
+			c.ErrChan <- fmt.Errorf("failed decoding document: %+v", doc)
+			continue
 		}
 
 		// encode the doc and and the _source field for a bulk request
@@ -340,7 +345,8 @@ func (c *Config) CopyShardingSettings(idxs *Indexes) (err error) {
 // make the initial scroll req
 func (c *Config) NewScroll() (scroll *Scroll, err error) {
 
-	resp, err := http.Get(fmt.Sprintf("%s/%s/_search/?scroll=1m&search_type=scan&size=%d", c.SrcEs, c.IndexNames, c.DocBufferCount))
+	// curl -XGET 'http://es-0.9:9200/_search?search_type=scan&scroll=10m&size=50'
+	resp, err := http.Get(fmt.Sprintf("%s/_search?search_type=scan&scroll=%s&size=%d", c.SrcEs, c.ScrollTime, c.DocBufferCount))
 	if err != nil {
 		return
 	}
@@ -356,10 +362,11 @@ func (c *Config) NewScroll() (scroll *Scroll, err error) {
 
 // Stream from source es instance. "done" is an indicator that the stream is
 // over
-func (s *Scroll) Stream(c *Config) (done bool) {
+func (s *Scroll) Next(c *Config) (done bool) {
 
+	//  curl -XGET 'http://es-0.9:9200/_search/scroll?scroll=5m'
 	id := bytes.NewBufferString(s.ScrollId)
-	resp, err := http.Post(fmt.Sprintf("%s/_search/scroll?scroll=%s&search_type=scan&size=%d", c.SrcEs, c.ScrollTime, c.DocBufferCount), "", id)
+	resp, err := http.Post(fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime, c.DocBufferCount), "", id)
 	if err != nil {
 		c.ErrChan <- err
 		return
@@ -378,16 +385,10 @@ func (s *Scroll) Stream(c *Config) (done bool) {
 		return
 	}
 
-	c.DecodeStream(resp.Body)
-
-	return
-}
-
-func (c *Config) DecodeStream(body io.Reader) {
-
-	dec := json.NewDecoder(body)
+	// decode elasticsearch scroll response
+	dec := json.NewDecoder(resp.Body)
 	streamResponse := map[string]interface{}{}
-	err := dec.Decode(&streamResponse)
+	err = dec.Decode(&streamResponse)
 	if err != nil {
 		c.ErrChan <- err
 		return
@@ -419,6 +420,8 @@ func (c *Config) DecodeStream(body io.Reader) {
 			Id:     doc["_id"].(string),
 		}
 	}
+
+	return
 }
 
 // Post to es as bulk and reset the data buffer

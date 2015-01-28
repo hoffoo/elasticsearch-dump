@@ -192,6 +192,13 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 	dec := json.NewDecoder(resp.Body)
 	err = dec.Decode(idx)
 
+	// always ignore internal _ indexes
+	for name, _ := range *idx {
+		if name[0] == '_' {
+			delete(*idx, name)
+		}
+	}
+
 	// remove indexes that start with . if user asked for it
 	if c.CopyDotnameIndexes == false {
 		for name, _ := range *idx {

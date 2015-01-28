@@ -35,5 +35,5 @@ Application Options:
 ## BUGS:
 
 1. It will not do anything special when copying the _id (copies _id from source host). If _id is remapped this probably won't do what you want.
-1. Should check if the bulk index requests starts getting large (in bytes), and force a flush if that is the case. Right now we silently fail if elasticsearch refuses a large request.
+1. Should check if the bulk index requests starts getting large (in bytes), and force a flush if that is the case. Right now we show an error if elasticsearch refuses a large request.
 1. Should assume a default port of 9200

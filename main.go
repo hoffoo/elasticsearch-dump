@@ -49,7 +49,6 @@ type Config struct {
 	Destructive        bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
 	IndexNames         string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
 	CopyDotnameIndexes bool   `short:"a" long:"all" description:"Copy indexes starting with ." default:"false"`
-	//CompareIndexes     []string `long:"diff" description:"Compare indexes between elasticsearch indexes"`
 }
 
 func main() {
@@ -69,14 +68,9 @@ func main() {
 		return
 	}
 
-	//	if len(c.CompareIndexes) > 0 {
-	//		c.Compare()
-	//		return
-	//	}
-
-	// get all indexes
+	// get all indexes from source
 	idxs := Indexes{}
-	if err := c.GetIndexes(&idxs); err != nil {
+	if err := c.GetIndexes(c.SrcEs, &idxs); err != nil {
 		fmt.Println(err)
 		return
 	}
@@ -132,7 +126,7 @@ func main() {
 				c.BulkPost(&buf)
 				buf.Reset()
 			case <-c.QuitChan:
-				fmt.Println("Indexed ", docCount, "documents")
+				fmt.Println("Indexed", docCount, "documents")
 				os.Exit(0) // screw cleaning up (troll)
 			}
 		}
@@ -150,9 +144,9 @@ func main() {
 	}
 }
 
-func (c *Config) GetIndexes(idx *Indexes) (err error) {
+func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 
-	resp, err := http.Get(fmt.Sprintf("%s/%s/_mappings", c.SrcEs, c.IndexNames))
+	resp, err := http.Get(fmt.Sprintf("%s/%s/_mappings", host, c.IndexNames))
 	if err != nil {
 		return
 	}
@@ -371,8 +365,4 @@ func (c *Config) BulkPost(data *bytes.Buffer) {
 		c.ErrChan <- fmt.Errorf("bad bulk response: %s", string(b))
 		return
 	}
-}
-
-func (c *Config) Compare() {
-
 }

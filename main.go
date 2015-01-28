@@ -43,7 +43,7 @@ type Config struct {
 	DstEs             string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
 	DocBufferCount    int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request" default:"100"`
 	ScrollTime        string `short:"t" long:"time" description:"Scroll time" default:"1m"`
-	CopySettings      bool   `long:"settings" description:"Copy sharding and replication settings from source" default:"true"`
+	CopySettings      bool   `long:"settings" description:"Copy sharding settings from source" default:"true"`
 	Destructive       bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
 	DocsOnly          bool   `long:"docs-only" description:"Load documents only, do not try to recreate indexes" default:"false"`
 	CreateIndexesOnly bool   `long:"index-only" description:"Only create indexes, do not load documents" default:"false"`
@@ -84,6 +84,8 @@ func main() {
 			fmt.Println(err)
 			return
 		}
+	} else {
+
 	}
 
 	if c.DocsOnly == false {
@@ -366,10 +368,13 @@ func (s *Scroll) Next(c *Config) (done bool) {
 
 	//  curl -XGET 'http://es-0.9:9200/_search/scroll?scroll=5m'
 	id := bytes.NewBufferString(s.ScrollId)
-	resp, err := http.Post(fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime), "", id)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime), id)
 	if err != nil {
 		c.ErrChan <- err
-		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		c.ErrChan <- err
 	}
 	defer resp.Body.Close()
 

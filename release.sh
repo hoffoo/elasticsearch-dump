@@ -74,3 +74,5 @@ unset -f go-alias
 
 # crosscompile
 go-build-all
+# dont arm wtf
+rm -f elasticsearch-dump*arm*

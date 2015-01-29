@@ -40,14 +40,14 @@ type ClusterHealth struct {
 
 type Config struct {
 	FlushLock sync.Mutex
-	DocChan   chan Document
+	DocChan   chan map[string]interface{}
 	ErrChan   chan error
 	Uid       string // es scroll uid
 
 	// config options
 	SrcEs             string `short:"s" long:"source"  description:"source elasticsearch instance" required:"true"`
 	DstEs             string `short:"d" long:"dest"    description:"destination elasticsearch instance" required:"true"`
-	DocBufferCount    int    `short:"c" long:"count"   description:"number of documents at a time: ie \"size\" in the scroll request. If 0 size will not be sent to es" default:"100"`
+	DocBufferCount    int    `short:"c" long:"count"   description:"number of documents at a time: ie \"size\" in the scroll request" default:"100"`
 	ScrollTime        string `short:"t" long:"time"    description:"scroll time" default:"1m"`
 	Destructive       bool   `short:"f" long:"force"   description:"delete destination index before copying" default:"false"`
 	ShardsCount       int    `long:"shards"            description:"set a number of shards on newly created indexes"`
@@ -55,9 +55,10 @@ type Config struct {
 	CreateIndexesOnly bool   `long:"index-only"        description:"only create indexes, do not load documents" default:"false"`
 	EnableReplication bool   `long:"replicate"         description:"enable replication while indexing into the new indexes" default:"false"`
 	IndexNames        string `short:"i" long:"indexes" description:"list of indexes to copy, comma separated" default:"_all"`
-	CopyAllIndexes    bool   `short:"a" long:"all"     description:"copy all indexes, if false indexes starting with . and _ are not copied" default:"false"`
+	CopyAllIndexes    bool   `short:"a" long:"all"     description:"copy indexes starting with . and _" default:"false"`
 	Workers           int    `short:"w" long:"workers" description:"concurrency" default:"1"`
 	CopySettings      bool   `long:"settings"          description:"copy sharding settings from source" default:"true"`
+	WaitForGreen      bool   `long:"green"             description:"wait for both hosts cluster status to be green before dump. otherwise yellow is okay" default:"false"`
 }
 
 func main() {
@@ -77,7 +78,7 @@ func main() {
 	}
 
 	// enough of a buffer to hold all the search results across all workers
-	c.DocChan = make(chan Document, c.DocBufferCount*c.Workers)
+	c.DocChan = make(chan map[string]interface{}, c.DocBufferCount*c.Workers)
 
 	// get all indexes from source
 	idxs := Indexes{}
@@ -125,30 +126,22 @@ func main() {
 		return
 	}
 
-	// wait for cluster state to be okay in case we are copying many indexes or
-	// shards
+	// wait for cluster state to be okay before dumping
 	timer := time.NewTimer(time.Second * 3)
-	var srcReady, dstReady bool
 	for {
-		if health := ClusterStatus(c.SrcEs); health.Status == "red" {
-			fmt.Printf("%s is %s %s, delaying start\n", health.Name, c.SrcEs, health.Status)
-			srcReady = false
-		} else {
-			srcReady = true
-		}
-
-		if health := ClusterStatus(c.DstEs); health.Status == "red" {
-			fmt.Printf("%s on %s is %s, delaying start\n", health.Name, c.DstEs, health.Status)
-			dstReady = false
-		} else {
-			dstReady = true
-		}
-
-		if !srcReady || !dstReady {
+		if status, ready := c.ClusterReady(c.SrcEs); !ready {
+			fmt.Printf("%s at %s is %s, delaying dump\n", status.Name, c.SrcEs, status.Status)
 			<-timer.C
-		} else {
-			break
+			continue
 		}
+		if status, ready := c.ClusterReady(c.DstEs); !ready {
+			fmt.Printf("%s at %s is %s, delaying dump\n", status.Name, c.DstEs, status.Status)
+			<-timer.C
+			continue
+		}
+
+		timer.Stop()
+		break
 	}
 	fmt.Println("starting dump..")
 
@@ -195,7 +188,13 @@ func (c *Config) NewWorker(docCount *int, bar *pb.ProgressBar, wg *sync.WaitGrou
 
 	for {
 		var err error
-		doc, open := <-c.DocChan
+		docI, open := <-c.DocChan
+		doc := Document{
+			Index:  docI["_index"].(string),
+			Type:   docI["_type"].(string),
+			source: docI["_source"].(map[string]interface{}),
+			Id:     docI["_id"].(string),
+		}
 
 		// if channel is closed flush and gtfo
 		if !open {
@@ -219,8 +218,8 @@ func (c *Config) NewWorker(docCount *int, bar *pb.ProgressBar, wg *sync.WaitGrou
 			c.ErrChan <- err
 		}
 
-		// if we approach the 100mb (95mb) limit, flush to es and reset mainBuf
-		if mainBuf.Len()+docBuf.Len() > 95000000 {
+		// if we approach the 100mb es limit, flush to es and reset mainBuf
+		if mainBuf.Len()+docBuf.Len() > 100000000 {
 			c.BulkPost(&mainBuf)
 		}
 
@@ -384,7 +383,7 @@ func (c *Config) CopyShardingSettings(idxs *Indexes) (err error) {
 				// try the new style syntax first, which has an index object
 				shards = settings.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_shards"].(string)
 			} else {
-				// if not, could be running from an old es intace, try the old style index.number_of_shards
+				// if not, could be running from old es, try the old style index.number_of_shards
 				shards = settings.(map[string]interface{})["settings"].(map[string]interface{})["index.number_of_shards"].(string)
 			}
 			index.(map[string]interface{})["settings"].(map[string]interface{})["index"] = map[string]interface{}{
@@ -441,8 +440,6 @@ func (c *Config) NewScroll() (scroll *Scroll, err error) {
 	scroll = &Scroll{}
 	err = dec.Decode(scroll)
 
-	fmt.Println(scroll.ScrollId)
-
 	return
 }
 
@@ -466,7 +463,7 @@ func (s *Scroll) Next(c *Config) (done bool) {
 	// XXX this might be bad, but assume we are done
 	if resp.StatusCode != 200 {
 		b, _ := ioutil.ReadAll(resp.Body)
-		c.ErrChan <- fmt.Errorf("bad scroll response: %s", string(b))
+		c.ErrChan <- fmt.Errorf("scroll response: %s", string(b))
 		// flush and quit
 		return true
 	}
@@ -498,13 +495,7 @@ func (s *Scroll) Next(c *Config) (done bool) {
 
 	// write all the docs into a channel
 	for _, docI := range docs {
-		doc := docI.(map[string]interface{})
-		c.DocChan <- Document{
-			Index:  doc["_index"].(string),
-			Type:   doc["_type"].(string),
-			source: doc["_source"].(map[string]interface{}),
-			Id:     doc["_id"].(string),
-		}
+		c.DocChan <- docI.(map[string]interface{})
 	}
 
 	return
@@ -530,6 +521,24 @@ func (c *Config) BulkPost(data *bytes.Buffer) {
 		c.ErrChan <- fmt.Errorf("bad bulk response: %s", string(b))
 		return
 	}
+}
+
+func (c *Config) ClusterReady(host string) (*ClusterHealth, bool) {
+
+	health := ClusterStatus(host)
+	if health.Status == "red" {
+		return health, false
+	}
+
+	if c.WaitForGreen == false && health.Status == "yellow" {
+		return health, true
+	}
+
+	if health.Status == "green" {
+		return health, true
+	}
+
+	return health, false
 }
 
 func ClusterStatus(host string) *ClusterHealth {

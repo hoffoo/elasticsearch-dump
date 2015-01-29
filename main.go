@@ -134,14 +134,14 @@ func main() {
 	timer := time.NewTimer(time.Second * 3)
 	var srcReady, dstReady bool
 	for {
-		if health := ClusterStatus(c.SrcEs); health.Status != "green" {
+		if health := ClusterStatus(c.SrcEs); health.Status == "red" {
 			fmt.Printf("%s is %s %s, delaying start\n", health.Name, c.SrcEs, health.Status)
 			srcReady = false
 		} else {
 			srcReady = true
 		}
 
-		if health := ClusterStatus(c.DstEs); health.Status != "green" {
+		if health := ClusterStatus(c.DstEs); health.Status == "red" {
 			fmt.Printf("%s on %s is %s, delaying start\n", health.Name, c.DstEs, health.Status)
 			dstReady = false
 		} else {

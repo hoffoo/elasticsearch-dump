@@ -462,15 +462,11 @@ func (s *Scroll) Next(c *Config) (done bool) {
 	defer resp.Body.Close()
 
 	// XXX this might be bad, but assume we are done
-	if resp.StatusCode == 404 {
-		// flush and quit
-		return true
-	}
-
 	if resp.StatusCode != 200 {
 		b, _ := ioutil.ReadAll(resp.Body)
 		c.ErrChan <- fmt.Errorf("bad scroll response: %s", string(b))
-		return
+		// flush and quit
+		return true
 	}
 
 	// decode elasticsearch scroll response

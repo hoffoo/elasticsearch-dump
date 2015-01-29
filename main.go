@@ -476,7 +476,7 @@ func (s *Scroll) Next(c *Config) (done bool) {
 			id := strings.Replace(status.Reason, "SearchContextMissingException[No search context found for id", "", 1)
 			id = id[:len(id)-3] // gross, print out the integer id
 			fmt.Println("No search context found for id: ", id)
-			break
+			return
 		}
 		fallthrough
 	default:

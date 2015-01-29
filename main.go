@@ -285,12 +285,10 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 		c.IndexNames = strings.Join(newIndexes, ",")
 	}
 
-	for name, idx := range *idx {
+	for _, idx := range *idx {
 		// wrap in mappings if dumping from super old es
 		if _, ok := idx.(map[string]interface{})["mappings"]; !ok {
-			idx.(map[string]interface{})[name] = map[string]interface{}{
-				"mappings": idx,
-			}
+			idx.(map[string]interface{})["mappings"] = idx
 		}
 	}
 	fmt.Printf("%+v\n", *idx)

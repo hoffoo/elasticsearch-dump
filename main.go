@@ -244,7 +244,7 @@ WORKER_DONE:
 	wg.Done()
 }
 
-func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
+func (c *Config) GetIndexes(host string, idxs *Indexes) (err error) {
 
 	resp, err := http.Get(fmt.Sprintf("%s/%s/_mapping", host, c.IndexNames))
 	if err != nil {
@@ -253,23 +253,23 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 	defer resp.Body.Close()
 
 	dec := json.NewDecoder(resp.Body)
-	err = dec.Decode(idx)
+	err = dec.Decode(idxs)
 
 	// always ignore internal _ indexes
-	for name, _ := range *idx {
+	for name, _ := range *idxs {
 		if name[0] == '_' {
-			delete(*idx, name)
+			delete(*idxs, name)
 		}
 	}
 
 	// remove indexes that start with . if user asked for it
 	if c.CopyAllIndexes == false {
-		for name, _ := range *idx {
+		for name, _ := range *idxs {
 			switch name[0] {
 			case '.':
-				delete(*idx, name)
+				delete(*idxs, name)
 			case '_':
-				delete(*idx, name)
+				delete(*idxs, name)
 
 			}
 		}
@@ -279,22 +279,21 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 	// after looking at mappings
 	if c.IndexNames == "_all" {
 		var newIndexes []string
-		for name, _ := range *idx {
+		for name, _ := range *idxs {
 			newIndexes = append(newIndexes, name)
 		}
 		c.IndexNames = strings.Join(newIndexes, ",")
 	}
 
-	for _, idx := range *idx {
+	for name, idx := range *idxs {
 		// wrap in mappings if dumping from super old es
 		if _, ok := idx.(map[string]interface{})["mappings"]; !ok {
-			oldIdx := idx
-			idx = map[string]interface{}{
-				"mappings": oldIdx,
+			(*idxs)[name] = map[string]interface{}{
+				"mappings": idx,
 			}
 		}
 	}
-	fmt.Printf("%+v\n", *idx)
+	fmt.Printf("%+v\n", *idxs)
 
 	return
 }

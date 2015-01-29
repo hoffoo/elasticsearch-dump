@@ -77,11 +77,7 @@ func main() {
 	}
 
 	// enough of a buffer to hold all the search results across all workers
-	if c.DocBufferCount == 0 {
-		c.DocChan = make(chan Document, 1000*c.Workers)
-	} else {
-		c.DocChan = make(chan Document, c.DocBufferCount*c.Workers)
-	}
+	c.DocChan = make(chan Document, c.DocBufferCount*c.Workers)
 
 	// get all indexes from source
 	idxs := Indexes{}
@@ -285,8 +281,8 @@ func (c *Config) GetIndexes(host string, idxs *Indexes) (err error) {
 		c.IndexNames = strings.Join(newIndexes, ",")
 	}
 
+	// wrap in mappings if dumping from super old es
 	for name, idx := range *idxs {
-		// wrap in mappings if dumping from super old es
 		if _, ok := idx.(map[string]interface{})["mappings"]; !ok {
 			(*idxs)[name] = map[string]interface{}{
 				"mappings": idx,
@@ -434,12 +430,7 @@ func (idxs *Indexes) DisableReplication() {
 func (c *Config) NewScroll() (scroll *Scroll, err error) {
 
 	// curl -XGET 'http://es-0.9:9200/_search?search_type=scan&scroll=10m&size=50'
-	var url string
-	if c.DocBufferCount > 0 {
-		url = fmt.Sprintf("%s/%s/_search?search_type=scan&scroll=%s&size=%d", c.SrcEs, c.IndexNames, c.ScrollTime, c.DocBufferCount)
-	} else {
-		url = fmt.Sprintf("%s/%s/_search?search_type=scan&scroll=%s", c.SrcEs, c.IndexNames, c.ScrollTime)
-	}
+	url := fmt.Sprintf("%s/%s/_search?search_type=scan&scroll=%s&size=%d", c.SrcEs, c.IndexNames, c.ScrollTime, c.DocBufferCount)
 	resp, err := http.Get(url)
 	if err != nil {
 		return
@@ -461,7 +452,7 @@ func (s *Scroll) Next(c *Config) (done bool) {
 	//  curl -XGET 'http://es-0.9:9200/_search/scroll?scroll=5m'
 	id := bytes.NewBufferString(s.ScrollId)
 
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime), id)
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime), id)
 	if err != nil {
 		c.ErrChan <- err
 	}

@@ -288,7 +288,10 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 	for _, idx := range *idx {
 		// wrap in mappings if dumping from super old es
 		if _, ok := idx.(map[string]interface{})["mappings"]; !ok {
-			idx.(map[string]interface{})["mappings"] = idx
+			oldIdx := idx
+			idx = map[string]interface{}{
+				"mappings": oldIdx,
+			}
 		}
 	}
 	fmt.Printf("%+v\n", *idx)

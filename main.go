@@ -296,7 +296,7 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 			break
 		}
 	}
-	fmt.Printf("%v\n", idx)
+	fmt.Printf("%+v\n", *idx)
 
 	return
 }

@@ -289,7 +289,6 @@ func (c *Config) GetIndexes(host string, idxs *Indexes) (err error) {
 			}
 		}
 	}
-	fmt.Printf("%+v\n", *idxs)
 
 	return
 }
@@ -442,6 +441,8 @@ func (c *Config) NewScroll() (scroll *Scroll, err error) {
 	scroll = &Scroll{}
 	err = dec.Decode(scroll)
 
+	fmt.Println(scroll.ScrollId)
+
 	return
 }
 
@@ -452,7 +453,7 @@ func (s *Scroll) Next(c *Config) (done bool) {
 	//  curl -XGET 'http://es-0.9:9200/_search/scroll?scroll=5m'
 	id := bytes.NewBufferString(s.ScrollId)
 
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/%s/_search/scroll?scroll=%s", c.SrcEs, c.IndexNames, c.ScrollTime), id)
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime), id)
 	if err != nil {
 		c.ErrChan <- err
 	}

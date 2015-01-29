@@ -287,11 +287,14 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 
 	for _, idx := range *idx {
 		// wrap in mappings if dumping from super old es
-		if _, ok := idx.(map[string]interface{})["mappings"]; !ok {
-			idx = map[string]interface{}{
-				"mappings": idx,
+		for _, idxType := range idx.(map[string]interface{}) {
+			if _, ok := idxType.(map[string]interface{})["mappings"]; !ok {
+				idxType = map[string]interface{}{
+					"mappings": idxType,
+				}
 			}
 		}
+
 	}
 
 	return

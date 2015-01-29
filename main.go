@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	pb "github.com/cheggaaa/pb"
 	goflags "github.com/jessevdk/go-flags"
@@ -32,6 +33,11 @@ type Scroll struct {
 	} `json:"hits"`
 }
 
+type ClusterHealth struct {
+	Name   string `json:"cluster_name"`
+	Status string `json:"status"`
+}
+
 type Config struct {
 	FlushLock sync.Mutex
 	DocChan   chan Document
@@ -39,17 +45,19 @@ type Config struct {
 	Uid       string // es scroll uid
 
 	// config options
-	SrcEs             string `short:"s" long:"source" description:"Source elasticsearch instance" required:"true"`
-	DstEs             string `short:"d" long:"dest" description:"Destination elasticsearch instance" required:"true"`
-	DocBufferCount    int    `short:"c" long:"count" description:"Number of documents at a time: ie \"size\" in the scroll request. If 0 size will not be sent to es" default:"100"`
-	ScrollTime        string `short:"t" long:"time" description:"Scroll time" default:"1m"`
-	CopySettings      bool   `long:"settings" description:"Copy sharding settings from source" default:"true"`
-	Destructive       bool   `short:"f" long:"force" description:"Delete destination index before copying" default:"false"`
-	DocsOnly          bool   `long:"docs-only" description:"Load documents only, do not try to recreate indexes" default:"false"`
-	CreateIndexesOnly bool   `long:"index-only" description:"Only create indexes, do not load documents" default:"false"`
-	IndexNames        string `short:"i" long:"indexes" description:"List of indexes to copy, comma separated" default:"_all"`
-	CopyAllIndexes    bool   `short:"a" long:"all" description:"Copy all indexes, if false indexes starting with . and _ are not copied" default:"false"`
-	Workers           int    `short:"w" long:"workers" description:"Concurrency" default:"1"`
+	SrcEs             string `short:"s" long:"source"  description:"source elasticsearch instance" required:"true"`
+	DstEs             string `short:"d" long:"dest"    description:"destination elasticsearch instance" required:"true"`
+	DocBufferCount    int    `short:"c" long:"count"   description:"number of documents at a time: ie \"size\" in the scroll request. If 0 size will not be sent to es" default:"100"`
+	ScrollTime        string `short:"t" long:"time"    description:"scroll time" default:"1m"`
+	Destructive       bool   `short:"f" long:"force"   description:"delete destination index before copying" default:"false"`
+	ShardsCount       int    `long:"shards"            description:"set a number of shards on newly created indexes"`
+	DocsOnly          bool   `long:"docs-only"         description:"load documents only, do not try to recreate indexes" default:"false"`
+	CreateIndexesOnly bool   `long:"index-only"        description:"only create indexes, do not load documents" default:"false"`
+	EnableReplication bool   `long:"replicate"         description:"enable replication while indexing into the new indexes" default:"false"`
+	IndexNames        string `short:"i" long:"indexes" description:"list of indexes to copy, comma separated" default:"_all"`
+	CopyAllIndexes    bool   `short:"a" long:"all"     description:"copy all indexes, if false indexes starting with . and _ are not copied" default:"false"`
+	Workers           int    `short:"w" long:"workers" description:"concurrency" default:"1"`
+	CopySettings      bool   `long:"settings"          description:"copy sharding settings from source" default:"true"`
 }
 
 func main() {
@@ -83,13 +91,20 @@ func main() {
 	}
 
 	// copy index settings if user asked
-	if c.CopySettings == true {
+	if c.ShardsCount > 0 {
+		for name, _ := range idxs {
+			idxs.SetShardCount(name, fmt.Sprint(c.ShardsCount))
+		}
+	} else if c.CopySettings == true {
 		if err := c.CopyShardingSettings(&idxs); err != nil {
 			fmt.Println(err)
 			return
 		}
-	} else {
+	}
 
+	// disable replication
+	if c.EnableReplication == false {
+		idxs.DisableReplication()
 	}
 
 	if c.DocsOnly == false {
@@ -108,10 +123,38 @@ func main() {
 		}
 	}
 
+	// if we only want to create indexes, we are done here, return
 	if c.CreateIndexesOnly {
 		fmt.Println("Indexes created, done")
 		return
 	}
+
+	// wait for cluster state to be okay in case we are copying many indexes or
+	// shards
+	timer := time.NewTimer(time.Second * 3)
+	var srcReady, dstReady bool
+	for {
+		if health := ClusterStatus(c.SrcEs); health.Status != "green" {
+			fmt.Printf("%s is %s %s, delaying start\n", health.Name, c.SrcEs, health.Status)
+			srcReady = false
+		} else {
+			srcReady = true
+		}
+
+		if health := ClusterStatus(c.DstEs); health.Status != "green" {
+			fmt.Printf("%s on %s is %s, delaying start\n", health.Name, c.DstEs, health.Status)
+			dstReady = false
+		} else {
+			dstReady = true
+		}
+
+		if !srcReady || !dstReady {
+			<-timer.C
+		} else {
+			break
+		}
+	}
+	fmt.Println("starting dump..")
 
 	// start scroll
 	scroll, err := c.NewScroll()
@@ -348,15 +391,44 @@ func (c *Config) CopyShardingSettings(idxs *Indexes) (err error) {
 	return
 }
 
+func (idxs *Indexes) SetShardCount(indexName, shards string) {
+
+	index := (*idxs)[indexName]
+	if _, ok := (*idxs)[indexName].(map[string]interface{})["settings"]; !ok {
+		index.(map[string]interface{})["settings"] = map[string]interface{}{}
+	}
+
+	if _, ok := (*idxs)[indexName].(map[string]interface{})["settings"].(map[string]interface{})["index"]; !ok {
+		index.(map[string]interface{})["settings"].(map[string]interface{})["index"] = map[string]interface{}{}
+	}
+
+	index.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_shards"] = shards
+}
+
+func (idxs *Indexes) DisableReplication() {
+
+	for name, index := range *idxs {
+		if _, ok := (*idxs)[name].(map[string]interface{})["settings"]; !ok {
+			index.(map[string]interface{})["settings"] = map[string]interface{}{}
+		}
+
+		if _, ok := (*idxs)[name].(map[string]interface{})["settings"].(map[string]interface{})["index"]; !ok {
+			index.(map[string]interface{})["settings"].(map[string]interface{})["index"] = map[string]interface{}{}
+		}
+
+		index.(map[string]interface{})["settings"].(map[string]interface{})["index"].(map[string]interface{})["number_of_replicas"] = "0"
+	}
+}
+
 // make the initial scroll req
 func (c *Config) NewScroll() (scroll *Scroll, err error) {
 
 	// curl -XGET 'http://es-0.9:9200/_search?search_type=scan&scroll=10m&size=50'
 	var url string
 	if c.DocBufferCount > 0 {
-		url = fmt.Sprintf("%s/_search?search_type=scan&scroll=%s&size=%d", c.SrcEs, c.ScrollTime, c.DocBufferCount)
+		url = fmt.Sprintf("%s/%s/_search?search_type=scan&scroll=%s&size=%d", c.SrcEs, c.IndexNames, c.ScrollTime, c.DocBufferCount)
 	} else {
-		url = fmt.Sprintf("%s/_search?search_type=scan&scroll=%s", c.SrcEs, c.ScrollTime)
+		url = fmt.Sprintf("%s/%s/_search?search_type=scan&scroll=%s", c.SrcEs, c.IndexNames, c.ScrollTime)
 	}
 	resp, err := http.Get(url)
 	if err != nil {
@@ -460,4 +532,19 @@ func (c *Config) BulkPost(data *bytes.Buffer) {
 		c.ErrChan <- fmt.Errorf("bad bulk response: %s", string(b))
 		return
 	}
+}
+
+func ClusterStatus(host string) *ClusterHealth {
+
+	resp, err := http.Get(fmt.Sprintf("%s/_cluster/health", host))
+	if err != nil {
+		return &ClusterHealth{Name: host, Status: "unreachable"}
+	}
+	defer resp.Body.Close()
+
+	health := &ClusterHealth{}
+	dec := json.NewDecoder(resp.Body)
+	err = dec.Decode(&health)
+
+	return health
 }

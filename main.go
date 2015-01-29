@@ -293,9 +293,10 @@ func (c *Config) GetIndexes(host string, idx *Indexes) (err error) {
 					"mappings": idxType,
 				}
 			}
+			break
 		}
-
 	}
+	fmt.Printf("%v\n", idx)
 
 	return
 }

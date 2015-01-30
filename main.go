@@ -193,7 +193,7 @@ func (s *Scroll) Next(c *Config) (done bool) {
 	//  curl -XGET 'http://es-0.9:9200/_search/scroll?scroll=5m'
 	id := bytes.NewBufferString(s.ScrollId)
 
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime), id)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime), id)
 	if err != nil {
 		c.ErrChan <- err
 	}

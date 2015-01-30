@@ -31,10 +31,12 @@ type Scroll struct {
 		Total int           `json:"total"`
 		Docs  []interface{} `json:"hits"`
 	} `json:"hits"`
-	Failures []struct {
-		Status int    `json:"status"`
-		Reason string `json:"reason"`
-	} `json:"failures"`
+	Shards struct {
+		Failures []struct {
+			Status int    `json:"status"`
+			Reason string `json:"reason"`
+		} `json:"failures"`
+	} `json:"_shards"`
 }
 
 type ClusterHealth struct {
@@ -182,6 +184,60 @@ func main() {
 	close(c.DocChan)
 	wg.Wait()
 	bar.FinishPrint(fmt.Sprintln("Indexed", docCount, "documents"))
+}
+
+// Stream from source es instance. "done" is an indicator that the stream is
+// over
+func (s *Scroll) Next(c *Config) (done bool) {
+
+	//  curl -XGET 'http://es-0.9:9200/_search/scroll?scroll=5m'
+	id := bytes.NewBufferString(s.ScrollId)
+
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime), id)
+	if err != nil {
+		c.ErrChan <- err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		c.ErrChan <- err
+	}
+	defer resp.Body.Close()
+
+	// decode elasticsearch scroll response
+	dec := json.NewDecoder(resp.Body)
+	scroll := &Scroll{}
+	err = dec.Decode(&scroll)
+	if err != nil {
+		c.ErrChan <- err
+		return
+	}
+
+	// XXX this might be bad, but assume we are done
+	/*
+		switch resp.StatusCode {
+		case 200:
+			break
+		case 404:
+			// this may indicate bug
+			c.ErrChan <- fmt.Errorf("looks like we dumped all we could...")
+		default:
+			c.ErrChan <- fmt.Errorf("scroll response: %s", stream)
+			// flush and quit
+			return true
+		}
+	*/
+
+	// show any failures
+	for _, failure := range scroll.Shards.Failures {
+		c.ErrChan <- fmt.Errorf(failure.Reason)
+	}
+
+	// write all the docs into a channel
+	for _, docI := range scroll.Hits.Docs {
+		c.DocChan <- docI.(map[string]interface{})
+	}
+
+	return
 }
 
 func (c *Config) NewWorker(docCount *int, bar *pb.ProgressBar, wg *sync.WaitGroup) {
@@ -461,60 +517,6 @@ func (c *Config) NewScroll() (scroll *Scroll, err error) {
 
 	scroll = &Scroll{}
 	err = dec.Decode(scroll)
-
-	return
-}
-
-// Stream from source es instance. "done" is an indicator that the stream is
-// over
-func (s *Scroll) Next(c *Config) (done bool) {
-
-	//  curl -XGET 'http://es-0.9:9200/_search/scroll?scroll=5m'
-	id := bytes.NewBufferString(s.ScrollId)
-
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/_search/scroll?scroll=%s", c.SrcEs, c.ScrollTime), id)
-	if err != nil {
-		c.ErrChan <- err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		c.ErrChan <- err
-	}
-	defer resp.Body.Close()
-
-	// decode elasticsearch scroll response
-	dec := json.NewDecoder(resp.Body)
-	stream := &Scroll{}
-	err = dec.Decode(&stream)
-	if err != nil {
-		c.ErrChan <- err
-		return
-	}
-
-	// XXX this might be bad, but assume we are done
-	/*
-		switch resp.StatusCode {
-		case 200:
-			break
-		case 404:
-			// this may indicate bug
-			c.ErrChan <- fmt.Errorf("looks like we dumped all we could...")
-		default:
-			c.ErrChan <- fmt.Errorf("scroll response: %s", stream)
-			// flush and quit
-			return true
-		}
-	*/
-
-	// show any failures
-	for _, failure := range stream.Failures {
-		c.ErrChan <- fmt.Errorf(failure.Reason)
-	}
-
-	// write all the docs into a channel
-	for _, docI := range stream.Hits.Docs {
-		c.DocChan <- docI.(map[string]interface{})
-	}
 
 	return
 }

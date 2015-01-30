@@ -189,6 +189,15 @@ func (c *Config) NewWorker(docCount *int, bar *pb.ProgressBar, wg *sync.WaitGrou
 	for {
 		var err error
 		docI, open := <-c.DocChan
+
+		// this check is in case the document is an error with scroll stuff
+		if status, ok := docI["status"]; ok {
+			if status.(int) == 404 {
+				fmt.Println("error: ", docI["response"])
+				continue
+			}
+		}
+
 		doc := Document{
 			Index:  docI["_index"].(string),
 			Type:   docI["_type"].(string),
@@ -461,25 +470,7 @@ func (s *Scroll) Next(c *Config) (done bool) {
 	defer resp.Body.Close()
 
 	// XXX this might be bad, but assume we are done
-	// if 404 check for weird (old) es behavior https://github.com/elasticsearch/elasticsearch/issues/5165
-	switch resp.StatusCode {
-	case 200:
-		break
-	case 404:
-		status := struct {
-			Status int
-			Reason string
-		}{}
-		dec := json.NewDecoder(resp.Body)
-		dec.Decode(&status)
-		if strings.Index(status.Reason, "SearchContextMissingException[No search context found for id") == 0 {
-			id := strings.Replace(status.Reason, "SearchContextMissingException[No search context found for id", "", 1)
-			id = id[:len(id)-3] // gross, print out the integer id
-			fmt.Println("No search context found for id: ", id)
-			return
-		}
-		fallthrough
-	default:
+	if resp.StatusCode != 200 {
 		b, _ := ioutil.ReadAll(resp.Body)
 		c.ErrChan <- fmt.Errorf("scroll response: %s", string(b))
 		// flush and quit

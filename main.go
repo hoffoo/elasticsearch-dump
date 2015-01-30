@@ -186,6 +186,7 @@ func (c *Config) NewWorker(docCount *int, bar *pb.ProgressBar, wg *sync.WaitGrou
 	docBuf := bytes.Buffer{}
 	docEnc := json.NewEncoder(&docBuf)
 
+READ_DOCS:
 	for {
 		var err error
 		docI, open := <-c.DocChan
@@ -195,6 +196,14 @@ func (c *Config) NewWorker(docCount *int, bar *pb.ProgressBar, wg *sync.WaitGrou
 			if status.(int) == 404 {
 				fmt.Println("error: ", docI["response"])
 				continue
+			}
+		}
+
+		// sanity check
+		for _, key := range []string{"_index", "_type", "_source", "_id"} {
+			if _, ok := docI[key]; !ok {
+				fmt.Println("failed parsing document: %v", docI)
+				break READ_DOCS
 			}
 		}
 

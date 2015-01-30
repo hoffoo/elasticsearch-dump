@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -29,8 +28,13 @@ type Scroll struct {
 	ScrollId string `json:"_scroll_id"`
 	TimedOut bool   `json:"timed_out"`
 	Hits     struct {
-		Total int `json:"total"`
+		Total int           `json:"total"`
+		Docs  []interface{} `json:"hits"`
 	} `json:"hits"`
+	Failures []struct {
+		Status int    `json:"status"`
+		Reason string `json:"reason"`
+	} `json:"failures"`
 }
 
 type ClusterHealth struct {
@@ -478,41 +482,37 @@ func (s *Scroll) Next(c *Config) (done bool) {
 	}
 	defer resp.Body.Close()
 
-	// XXX this might be bad, but assume we are done
-	if resp.StatusCode != 200 {
-		b, _ := ioutil.ReadAll(resp.Body)
-		c.ErrChan <- fmt.Errorf("scroll response: %s", string(b))
-		// flush and quit
-		return true
-	}
-
 	// decode elasticsearch scroll response
 	dec := json.NewDecoder(resp.Body)
-	streamResponse := map[string]interface{}{}
-	err = dec.Decode(&streamResponse)
+	stream := &Scroll{}
+	err = dec.Decode(&stream)
 	if err != nil {
 		c.ErrChan <- err
 		return
 	}
 
-	// decode docs json
-	hits := streamResponse["hits"]
-	var ok bool
-	var docsInterface map[string]interface{}
-	if docsInterface, ok = hits.(map[string]interface{}); !ok {
-		c.ErrChan <- errors.New("failed casting doc interfaces")
-		return
-	}
+	// XXX this might be bad, but assume we are done
+	/*
+		switch resp.StatusCode {
+		case 200:
+			break
+		case 404:
+			// this may indicate bug
+			c.ErrChan <- fmt.Errorf("looks like we dumped all we could...")
+		default:
+			c.ErrChan <- fmt.Errorf("scroll response: %s", stream)
+			// flush and quit
+			return true
+		}
+	*/
 
-	// cast the hits field into an array
-	var docs []interface{}
-	if docs, ok = docsInterface["hits"].([]interface{}); !ok {
-		c.ErrChan <- errors.New("failed casting doc")
-		return
+	// show any failures
+	for _, failure := range stream.Failures {
+		c.ErrChan <- fmt.Errorf(failure.Reason)
 	}
 
 	// write all the docs into a channel
-	for _, docI := range docs {
+	for _, docI := range stream.Hits.Docs {
 		c.DocChan <- docI.(map[string]interface{})
 	}
 
